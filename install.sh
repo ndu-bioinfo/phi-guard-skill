@@ -2,7 +2,7 @@
 # phi-safety installer — installs PHI safety hooks into Claude Code
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/ndu-bioinfo/phi-safety/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/ndu-bioinfo/phi-guard-skill/main/install.sh | bash
 #   # or, from a clone:
 #   bash install.sh
 #
@@ -10,7 +10,7 @@
 # Registers hooks in: ~/.claude/settings.json
 set -euo pipefail
 
-REPO="${PHI_SAFETY_REPO:-ndu-bioinfo/phi-safety}"
+REPO="${PHI_SAFETY_REPO:-ndu-bioinfo/phi-guard-skill}"
 REF="${PHI_SAFETY_REF:-main}"
 INSTALL_DIR="${PHI_SAFETY_DIR:-$HOME/.claude/phi-safety}"
 SETTINGS="$HOME/.claude/settings.json"

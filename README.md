@@ -17,20 +17,20 @@ operations (DROP TABLE, `rm -rf`, `terraform destroy`) are out of scope.
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/ndu-bioinfo/phi-safety/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/ndu-bioinfo/phi-guard-skill/main/install.sh | bash
 ```
 
 Private repo? Export a token first:
 
 ```bash
 GITHUB_TOKEN=ghp_xxx curl -fsSL -H "Authorization: token $GITHUB_TOKEN" \
-  https://raw.githubusercontent.com/ndu-bioinfo/phi-safety/main/install.sh | bash
+  https://raw.githubusercontent.com/ndu-bioinfo/phi-guard-skill/main/install.sh | bash
 ```
 
 Or from a local clone:
 
 ```bash
-git clone git@github.com:ndu-bioinfo/phi-safety.git
+git clone git@github.com:ndu-bioinfo/phi-guard-skill.git
 bash phi-safety/install.sh
 ```
 
