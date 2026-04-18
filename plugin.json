@@ -1,0 +1,9 @@
+{
+  "name": "phi-safety",
+  "version": "1.0.0",
+  "description": "PHI exposure prevention guardrails — detects database client usage, scans prompts for PHI patterns, and provides HIPAA-aligned decision guidance via Claude Code hooks and skills",
+  "tier": "official",
+  "skills": ["./skills/phi-safety"],
+  "hooks": "./hooks/hooks.json",
+  "rules": []
+}
