@@ -171,4 +171,4 @@ Treat it as the last-mile seatbelt, not the whole safety system.
 
 ## License
 
-MIT. Extracted from the GeneDx `code-assist-tools` marketplace.
+MIT.

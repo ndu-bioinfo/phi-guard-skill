@@ -25,24 +25,23 @@ triggers:
 # PHI Safety Guardrails
 
 This skill prevents Protected Health Information (PHI) from entering the LLM
-context, aligned with GeneDx's data classification and HIPAA compliance
-requirements.
+context and helps the assistant reason about HIPAA-aligned data handling.
 
-> **Scope:** PHI exposure prevention only. This plugin does NOT guard against
+> **Scope:** PHI exposure prevention only. This skill does NOT guard against
 > destructive operations (DROP TABLE, rm -rf, terraform destroy, etc.) — those
-> are separate operational safety concerns outside this plugin's responsibility.
+> are separate operational safety concerns outside this skill's responsibility.
 
-> **BAA Status:** These rules assume **no Business Associate Agreement (BAA)**
-> exists between GeneDx and the LLM provider (Anthropic). Any data entering the
-> LLM context is transmitted to a third-party API outside GeneDx's control — a
-> HIPAA compliance boundary. Once a BAA is executed with Anthropic, the database
-> client detection rules should be revised to permit PHI in the LLM context
-> under BAA terms.
+> **BAA assumption:** These rules assume **no Business Associate Agreement
+> (BAA)** exists between your organization and the external LLM provider. Any
+> data entering the LLM context is transmitted to a third-party API outside
+> your organization's control — a HIPAA compliance boundary. If a BAA is
+> executed with the provider, the database client detection rules can be
+> revised to permit PHI in the LLM context under BAA terms.
 >
-> **Approved internal AI endpoints** (e.g., Azure OpenAI within GeneDx's
-> firewall) are permitted for clinical data processing under existing policies.
-> This skill governs only the boundary where data leaves the organization via
-> external LLM APIs.
+> **Approved internal AI endpoints** (e.g., an in-tenant Azure OpenAI
+> deployment behind your organization's firewall) may be permitted for
+> clinical data processing under existing policies. This skill governs only
+> the boundary where data leaves the organization via external LLM APIs.
 
 ## Data Classification Alignment
 
