@@ -39,7 +39,7 @@ else
   else
     curl -fsSL "$TARBALL_URL" | tar -xz -C "$TMPDIR" || die "download failed (private repo? set GITHUB_TOKEN)"
   fi
-  SRC="$(find "$TMPDIR" -maxdepth 1 -type d -name 'phi-safety-*' | head -n1)"
+  SRC="$(find "$TMPDIR" -maxdepth 1 -mindepth 1 -type d | head -n1)"
   [[ -d "$SRC" ]] || die "could not locate extracted source"
   cp -R "$SRC/hooks" "$SRC/skills" "$SRC/plugin.json" "$INSTALL_DIR/"
 fi
