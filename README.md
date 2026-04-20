@@ -11,13 +11,6 @@
 curl -fsSL https://raw.githubusercontent.com/ndu-bioinfo/phi-guard-skill/main/install.sh | bash
 ```
 
-Private repo? Pass a token:
-
-```bash
-GITHUB_TOKEN=ghp_xxx bash -c "$(curl -fsSL -H \"Authorization: token $GITHUB_TOKEN\" \
-  https://raw.githubusercontent.com/ndu-bioinfo/phi-guard-skill/main/install.sh)"
-```
-
 Or from a clone:
 
 ```bash
