@@ -1,70 +1,61 @@
 ---
 name: phi-safety
 description: >
-  PHI exposure prevention guardrails for Claude Code. Detects database client
-  usage that could send Protected Health Information to the LLM API, scans
-  prompts for PHI patterns, and provides HIPAA-aligned decision guidance.
+  Second line of defense against Protected Health Information (PHI) reaching
+  the external LLM API. Use when the prompt scanner missed PHI, when a user
+  action may pull PHI into context (database queries, file reads, tool
+  output), or when discussing patient/clinical data. Honors the [PHI-OK]
+  attestation for synthetic test data.
 triggers:
-  - psql
-  - mysql
-  - mongo
-  - database
   - patient
   - clinical
   - accession
   - phi
   - hipaa
-  - pg_dump
-  - mysqldump
-  - mongodump
+  - mrn
   - medical record
   - health plan
   - social security
+  - psql
+  - mysql
+  - mongo
+  - database
+  - pg_dump
+  - mysqldump
+  - mongodump
 ---
 
-# PHI Safety Guardrails
+# PHI Safety — Second Line of Defense
 
-This skill prevents Protected Health Information (PHI) from entering the LLM
-context and helps the assistant reason about HIPAA-aligned data handling.
+The `prompt-phi-scan.sh` hook blocks prompts containing high-confidence PHI
+patterns *before* they reach the model. This skill is the backstop: catch
+PHI the regex missed, and prevent PHI from entering context through
+*actions* (DB queries, file reads, tool output).
 
-> **Scope:** PHI exposure prevention only. This skill does NOT guard against
-> destructive operations (DROP TABLE, rm -rf, terraform destroy, etc.) — those
-> are separate operational safety concerns outside this skill's responsibility.
+**Assumption:** no BAA exists with the external LLM provider. Any data
+entering the LLM context is sent to a third-party API outside your
+organization's control.
 
-> **BAA assumption:** These rules assume **no Business Associate Agreement
-> (BAA)** exists between your organization and the external LLM provider. Any
-> data entering the LLM context is transmitted to a third-party API outside
-> your organization's control — a HIPAA compliance boundary. If a BAA is
-> executed with the provider, the database client detection rules can be
-> revised to permit PHI in the LLM context under BAA terms.
->
-> **Approved internal AI endpoints** (e.g., an in-tenant Azure OpenAI
-> deployment behind your organization's firewall) may be permitted for
-> clinical data processing under existing policies. This skill governs only
-> the boundary where data leaves the organization via external LLM APIs.
+## Your Responsibilities
 
-## Data Classification Alignment
+1. **Detect PHI the prompt hook missed** — obfuscated dates, names spelled
+   across turns, foreign formats, indirect identifiers, prose like *"the
+   patient born in March 1985 with SMA…"*. If you see PHI, do not process,
+   repeat, summarize, or store it. Warn the user and ask them to redact
+   or re-submit with `[PHI-OK]`.
+2. **Prevent PHI from entering via actions** — before executing a database
+   client, dump tool, or file read that may contain PHI, stop and generate
+   the command for the user to run in their own terminal instead.
+3. **Honor the `[PHI-OK]` attestation** — when present in the prompt, treat
+   identifier-looking values as synthetic/test data. Do not refuse, redact,
+   or lecture. Override only if the data is clearly real and operational
+   despite the token.
 
-| Classification | Description | LLM Policy |
-|---------------|-------------|------------|
-| **Restricted** | PHI, ePHI, PII — patient/customer data | **BLOCK** — must never enter external LLM context |
-| **Confidential** | Employee data, financial data, internal operational data | **WARN** — confirm with user before processing |
-| **Public** | Marketing materials, public disclosures, open-source code | **ALLOW** — safe to process |
-
-### Zone Model
-
-- **Zone A (Identifiable/Operational):** Patient/provider workflows, clinical
-  databases with identifiable data. Data in this zone **must never be sent to
-  external LLM APIs**.
-- **Zone B (De-identified/Analytical):** Expert Determination de-identified data
-  under HIPAA §164.514(b)(1). All 18 HIPAA identifiers removed or generalized.
-  De-identified data may be processed after user confirmation.
-
-### The 18 HIPAA Identifiers (must never enter LLM context)
+## The 18 HIPAA Identifiers (must never enter LLM context)
 
 1. Names
-2. Geographic data (smaller than state)
-3. Dates (except year) related to an individual
+2. Geographic data smaller than state (street, city, county, ZIP — ZIP3 OK only for large areas)
+3. Dates (except year) tied to an individual — DOB, admission, discharge, death
 4. Phone numbers
 5. Fax numbers
 6. Email addresses
@@ -72,153 +63,72 @@ context and helps the assistant reason about HIPAA-aligned data handling.
 8. Medical record numbers (MRN)
 9. Health plan beneficiary numbers
 10. Account numbers
-11. Certificate/license numbers
-12. Vehicle identifiers and serial numbers
+11. Certificate / license numbers
+12. Vehicle identifiers and serial numbers (incl. license plates)
 13. Device identifiers and serial numbers
 14. Web URLs
 15. IP addresses
-16. Biometric identifiers
-17. Full-face photographs
-18. Any other unique identifying number or code (e.g., accession numbers)
+16. Biometric identifiers (fingerprints, voiceprints)
+17. Full-face photographs and comparable images
+18. Any other unique identifying number, characteristic, or code (accession numbers, specimen IDs, rare-disease combinations that re-identify)
 
-## PHI Exposure Prevention
+Also PHI under HIPAA Safe Harbor: **ages above 89** (must be aggregated as "90+").
 
-### Database Client Detection (Enforcement Layer)
+## Actions That Can Pull PHI Into Context
 
-Any database client or dump tool whose output would enter the LLM context
-is flagged for user confirmation:
+| Action | Risk | Safe alternative |
+|---|---|---|
+| `psql`, `mysql`, `mongo`, `duckdb`, `sqlite3`, `bq`, `snowsql`, `redis-cli`, `clickhouse-client`, `cqlsh` | Query results enter LLM context | Generate the SQL, user runs it in their own terminal |
+| `pg_dump`, `mysqldump`, `mongodump` | Full table contents stream into context | Generate the command, user runs it and keeps output local |
+| `Read` on clinical files, CSVs, lab reports | File contents enter context | Ask user to confirm file is de-identified or to redact first |
+| Schema-only queries (`\dt`, `SHOW TABLES`, `DESCRIBE`) | None | Safe — structure is not PHI |
 
-| Tool Category | Examples | Risk |
-|---------------|----------|------|
-| Interactive clients | `psql`, `pgcli`, `mysql`, `mongo`, `redis-cli`, `sqlite3`, `duckdb`, `snowsql`, `sqlcmd`, `bq`, `clickhouse-client`, `cqlsh` | Query results enter LLM context |
-| Dump/restore tools | `pg_dump`, `mysqldump`, `mongodump`, `pg_restore`, `mongorestore` | Full table contents streamed to LLM |
+**Rules:**
+- **Schema is safe, data is not.** Structure, column names, types — fine.
+  Row data may contain PHI.
+- **Error messages are safe.** Users can paste error text; it rarely contains PHI.
+- **When the environment is unknown, assume production with PHI.**
+- **Generate, don't execute.** For any data source that may contain PHI,
+  hand the user the command; don't run it yourself.
 
-**When detected:**
-- If the database contains PHI → **DENY** and generate the query for the user
-  to run in their own terminal
-- If confirmed non-PHI (CI metrics, build stats, monitoring) → **ALLOW** after
-  user confirmation
+## The `[PHI-OK]` Attestation
 
-**What to do instead of executing PHI queries:**
-```bash
-# Generate the query, user runs in their own terminal:
-psql service=<connection> -c "<GENERATED_SQL>"
+Users include the literal token `[PHI-OK]` anywhere in a prompt to assert
+the content is **synthetic / test / non-PHI** (fake DOBs in fixtures,
+redacted examples, regex development data).
 
-# Or save as CSV:
-psql service=<connection> --csv -o output.csv -c "<GENERATED_SQL>"
-```
+When present:
+- `prompt-phi-scan.sh` does not block.
+- `skill-inject.sh` does not inject this skill.
+- **You should honor it.** Process the prompt normally. Do not refuse,
+  redact, or lecture about identifier-looking values.
 
-- If the user reports an error, they can paste the **error message** (not
-  results) and you refine the query
-- If the user asks you to interpret results, explain that you cannot see the
-  data and guide them to inspect it themselves
+**Override only when** the prompt clearly contains real, operational PHI
+despite the token (e.g., a paste that looks like a live clinical system
+export, or a real name in operational context). In that case, decline and
+ask the user to confirm it's synthetic or redact it.
 
-### PHI in User Prompts (Detection Layer)
+The token is an attestation, not a magic word. Misuse is the user's
+responsibility.
 
-The prompt scanner detects high-confidence PHI patterns pasted into prompts:
+## When PHI Is Detected (no `[PHI-OK]`)
 
-| Pattern | Example |
-|---------|---------|
-| Labeled SSN | `SSN: 123-45-6789` |
-| Labeled MRN / Patient ID | `MRN: ABC-12345` |
-| Labeled Date of Birth | `DOB: 03/15/1985` |
-| Accession/specimen numbers | `accession: LAB-20240001` |
-| Health plan / beneficiary IDs | `member_id: H12345678` |
-| Tabular data with PHI columns | `patient_name | dob | ssn` |
-| Multi-line clinical data | Bulk-pasted records with dates and clinical keywords |
-
-**When detected:** A warning is shown to the user, and a reminder is injected
-into the agent context to not process, repeat, or summarize the PHI.
-
-## Decision Flowchart
-
-```
-User prompt arrives
-       |
-       v
-Does the prompt contain PHI patterns?
-(SSN, MRN, DOB, accession numbers, patient data)
-       |
-   yes |                    no
-       v                     |
-  WARN user:                 v
-  "PHI detected,        Does the action involve
-  do not proceed"        a database client or dump tool?
-                              |
-                          yes |              no
-                              v               |
-                     Does the database         v
-                     contain PHI?             ALLOW
-                              |
-                          yes |         no / confirmed non-PHI
-                              v               |
-                         BLOCK:               v
-                         Generate query,     ALLOW
-                         user runs it        (after confirmation)
-                         themselves
-```
-
-## Non-PHI Database Access
-
-Read-only queries against non-PHI data sources are **allowed after user
-confirmation**:
-
-- CI/CD metrics databases
-- Build/deployment status stores
-- Infrastructure monitoring (Prometheus, Grafana backends)
-- Application configuration stores
-- Schema-only queries (`\dt`, `SHOW TABLES`, `DESCRIBE`)
-
-**Schema is safe, data is not.** Table structures, column names, and types are
-fine. Row data may contain PHI.
-
-## Environment Awareness
-
-When the target environment is ambiguous, **default to the most restrictive
-treatment** (assume PHI-containing production database).
-
-Detection order:
-1. Explicit environment variable (`$CLAUDE_ENV`, `$ENVIRONMENT`)
-2. Database connection string or hostname clues (`prod`, `staging`, `dev`)
-3. Command arguments (e.g., `--context production`)
-4. If unknown → **assume production with PHI**
-
-## Key Principles
-
-1. **When in doubt, block.** It is always safer to ask than to leak PHI.
-2. **Generate, don't execute.** For any PHI database, generate the command for
-   the user to run in their own terminal.
-3. **Warn, don't block non-PHI.** For confirmed non-PHI data, a warning and
-   user confirmation is sufficient — do not prevent legitimate work.
-4. **Error messages are safe.** Users can paste error messages — these don't
-   contain PHI.
-5. **Schema is safe, data is not.** Table structures are fine. Row data may
-   contain PHI.
-6. **The user is the gatekeeper.** You provide the tool; they decide when to
-   use it.
-7. **Assume production.** When the environment is unknown, assume the database
-   contains PHI.
-8. **Defense in depth.** The skill provides guidance; the PreToolUse hook
-   provides enforcement. Neither alone is sufficient.
+1. Do **not** echo, quote, or summarize the PHI.
+2. Tell the user which category was detected (e.g., "labeled DOB + name").
+3. Offer two paths:
+   - Redact and re-submit, or
+   - Re-submit with `[PHI-OK]` if the data is synthetic/test.
+4. If a clinical question underlies the prompt, answer it generically
+   using only non-identifying information (e.g., birth year + dx year for
+   age-at-diagnosis).
 
 ## Enforcement Layers
 
-| Layer | Hook | Purpose |
-|-------|------|---------|
-| **Skill injection** | `UserPromptSubmit` | Detects PHI-related keywords in user prompt, injects this skill as context |
-| **PHI scanner** | `UserPromptSubmit` | Warns when prompt contains PHI patterns (SSN, MRN, DOB, etc.) |
-| **DB client guard** | `PreToolUse` on Bash | Flags database client/dump tool execution for PHI confirmation (`ask`) |
+| Layer | Mechanism | Behavior |
+|---|---|---|
+| **Prompt scanner** | `prompt-phi-scan.sh` (UserPromptSubmit) | **Blocks** prompts with high-confidence PHI patterns unless `[PHI-OK]` |
+| **Skill injection** | `skill-inject.sh` (UserPromptSubmit) | Loads this skill when PHI keywords appear (skipped if `[PHI-OK]`) |
+| **DB client guard** | `bash-guard.sh` (PreToolUse:Bash) | Asks before running database clients / dump tools |
+| **Model (this skill)** | In-context reasoning | Catches what the regex missed; guards action-initiated PHI exposure |
 
-## BAA Revision Guide
-
-When a BAA is executed with the LLM provider:
-
-| Rule | Pre-BAA | Post-BAA |
-|------|---------|----------|
-| PHI in LLM context | BLOCK | ALLOW with audit logging |
-| Non-PHI queries | WARN → confirm | ALLOW |
-
-**Post-BAA changes required:**
-1. Update `bash-guard.sh` — remove or relax the DB client `ask` gate
-2. Update this skill — permit PHI queries with appropriate access controls
-3. **Add audit logging** — all PHI access should be logged for compliance
+No single layer is sufficient — defense in depth.

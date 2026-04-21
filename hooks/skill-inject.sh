@@ -13,6 +13,12 @@ SKILL_PATH="${PLUGIN_ROOT}/skills/phi-safety/SKILL.md"
 
 prompt=$(jq -r '.prompt // ""' 2>/dev/null) || prompt=""
 
+# Bypass: user asserts prompt is synthetic/non-PHI with [PHI-OK] token.
+# Skip skill injection entirely to reduce context noise.
+if printf '%s\n' "$prompt" | grep -qF '[PHI-OK]'; then
+  exit 0
+fi
+
 # Trigger on PHI-related keywords only. This is a context-injection trigger
 # (loads SKILL.md into the agent), not an enforcement gate — false positives
 # just add safety context, which is harmless.
