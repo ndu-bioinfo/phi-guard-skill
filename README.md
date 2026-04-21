@@ -58,21 +58,42 @@ second — on your machine, before the prompt is sent.
 
 ---
 
-## Design philosophy: two gates, no hard stops
+## Design philosophy: block on high-confidence PHI, attest for synthetic
 
-This skill enforces **two gates** that sit between you and the Anthropic API:
+This skill enforces **two hook gates plus a model-side backstop** between
+you and the Anthropic API:
 
 ```
-  your prompt ──► [Gate 1: prompt scan]  ──► [Gate 2: tool-use guard] ──► LLM
-                         warn                     ask-to-confirm
+  your prompt ──► [Gate 1: prompt scan] ──► [Model + SKILL.md] ──► [Gate 2: tool-use guard] ──► LLM
+                  block or pass-through     second-line catch       ask-to-confirm
 ```
 
 ### Gate 1 — Prompt scanner (`UserPromptSubmit`)
 
-Scans every prompt *before* it leaves your machine for high-confidence PHI
-signals: labeled SSNs, MRNs, DOBs, accession numbers, or tabular clinical
-data with clinical column headers. If it finds something, it **warns** and
-lets you decide.
+Scans every prompt *before* it reaches the LLM for high-confidence PHI
+signals: labeled SSNs, MRNs, DOBs, accession numbers, patient-name +
+date-of-birth proximity, or tabular clinical data with clinical column
+headers. If it matches, the prompt is **blocked** — it is not sent to the
+model — and the user is told why.
+
+### The `[PHI-OK]` attestation
+
+False positives are the single biggest risk to any guardrail. A blocker
+that cries wolf on legitimate test data (`DOB: 03/15/1985` in a fixture,
+`SSN: 000-00-0000` in a regex unit test) trains users to disable it,
+bypass it, or move the work outside the tool entirely — strictly worse
+than no guardrail at all.
+
+To resolve this, the scanner honors a user attestation: include the
+literal token `[PHI-OK]` anywhere in your prompt, and the scanner
+passes through. The token is a **deliberate, auditable statement** that
+the identifier-looking values are synthetic / test / non-PHI. The skill
+itself is also bypassed in that case, so you don't get lectured about
+values you already declared fake.
+
+The token is not a magic word — it's an attestation. Misuse is a policy
+violation on the user's side. The goal is to preserve an escape hatch
+for legitimate work *without* giving silent exfiltration a silent path.
 
 ### Gate 2 — Database-client guard (`PreToolUse` on Bash)
 
@@ -81,32 +102,56 @@ Intercepts invocations of database clients (`psql`, `pgcli`, `mysql`,
 contains no PHI before running. Non-PHI databases (CI metrics, monitoring,
 config stores) remain fully usable — you just acknowledge once per session.
 
-### Why no hard block?
+### Model-side backstop (`SKILL.md`)
 
-The most important design choice here is what this skill **doesn't** do:
-it never silently blocks your prompt or tool call.
+When PHI-related keywords appear, the skill is injected into context. It
+instructs the model to catch what the regex missed (obfuscated dates,
+names spelled across turns, indirect identifiers) and to refuse actions
+that would pull PHI into context (reading a clinical CSV, executing a
+query against a PHI database). No single layer is sufficient — defense
+in depth.
 
-False positives are the single biggest risk to any guardrail. A scanner that
-cries wolf on legitimate work — flagging "patient-id" in a schema migration,
-or refusing to let you run `psql` against a config DB — trains users to
-disable it, bypass it, or move the work outside the tool entirely. That is
-strictly worse than no guardrail at all, because now you've lost the easy
-catches *and* created a false sense of security.
+---
 
-So the contract is:
+## Decision flowchart
 
-1. **High-precision signals only.** Patterns require labels
-   (`SSN: 123-45-6789`) or double signals (clinical column headers + tabular
-   formatting). No speculative matching.
-2. **Warn and inform, don't block.** The user stays in control. The skill's
-   job is to make sure the decision is *conscious*, not to make it for them.
-3. **Inject guidance on demand.** When PHI-adjacent keywords appear (HIPAA,
-   patient, clinical, etc.), a HIPAA decision-flow skill is loaded into
-   context so Claude itself can help reason about what's safe to share.
-
-The goal is to convert silent data exfiltration — the actual threat in the
-AI era — into a visible, deliberate moment. One where you get to say "yes,
-I know, this database has no PHI" or "oh, that *is* an MRN, let me redact."
+```
+User prompt arrives
+        │
+        ▼
+┌─ Gate 1: prompt-phi-scan.sh (UserPromptSubmit) ──────────┐
+│  PHI pattern detected?                                   │
+│    no  → pass to LLM                                     │
+│    yes → [PHI-OK] token present in prompt?               │
+│          yes → pass to LLM (treated as synthetic)        │
+│          no  → BLOCK (prompt never sent; user informed)  │
+└──────────────────────────────────────────────────────────┘
+        │ (pass)
+        ▼
+┌─ Model + SKILL.md (second line of defense) ──────────────┐
+│  Does the prompt contain PHI the regex missed?           │
+│    yes → refuse, ask user to redact or attest [PHI-OK]   │
+│    no  → continue                                        │
+│                                                          │
+│  Will a requested action pull PHI into context?          │
+│  (psql/mysql query, pg_dump, reading a clinical file)    │
+│    yes → generate the command for the user to run in     │
+│          their own terminal; do not execute              │
+│    no  → proceed                                         │
+└──────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌─ Gate 2: bash-guard.sh (PreToolUse on Bash) ─────────────┐
+│  DB client or dump tool invoked?                         │
+│    no  → allow                                           │
+│    yes → ask user to confirm target has no PHI           │
+│          confirmed → allow                               │
+│          denied    → block, generate query instead       │
+└──────────────────────────────────────────────────────────┘
+        │
+        ▼
+     LLM response
+```
 
 ---
 
@@ -114,9 +159,11 @@ I know, this database has no PHI" or "oh, that *is* an MRN, let me redact."
 
 | Scenario | Behavior |
 |---|---|
-| `psql -h localhost metrics_db` | Claude asks: "Confirm this database contains no PHI." |
-| Prompt contains `SSN: 123-45-6789` | Warning surfaces before send; you can edit and retry. |
-| Prompt mentions "how should I handle patient data?" | HIPAA decision-guidance skill auto-loads into context. |
+| `psql -h localhost metrics_db` | Gate 2 asks: "Confirm this database contains no PHI." |
+| Prompt contains `SSN: 123-45-6789` | Gate 1 **blocks** the prompt. Re-submit redacted, or add `[PHI-OK]` if synthetic. |
+| Prompt contains `DOB: 03/15/1985 [PHI-OK] — it's a test fixture` | Passes through; model treats values as synthetic. |
+| Prompt mentions "how should I handle patient data?" | Skill auto-loads as second-line PHI guidance. |
+| Model asked to `cat patients.csv` | Skill refuses; asks user to confirm file is de-identified or to redact. |
 | `ls -la`, normal coding, non-clinical prompts | Silent pass-through. No friction. |
 
 ---
