@@ -91,25 +91,44 @@ Also PHI under HIPAA Safe Harbor: **ages above 89** (must be aggregated as "90+"
 - **Generate, don't execute.** For any data source that may contain PHI,
   hand the user the command; don't run it yourself.
 
-## The `[PHI-OK]` Attestation
+## The `[PHI-OK]` Attestation — treat as synthetic, proceed normally
 
-Users include the literal token `[PHI-OK]` anywhere in a prompt to assert
-the content is **synthetic / test / non-PHI** (fake DOBs in fixtures,
-redacted examples, regex development data).
+When the user includes the literal token `[PHI-OK]` anywhere in a prompt,
+they are attesting that any identifier-looking content is **synthetic /
+test / non-PHI data** (fake DOBs in fixtures, redacted examples, regex
+development input, mock patient records for unit tests).
 
-When present:
-- `prompt-phi-scan.sh` does not block.
-- `skill-inject.sh` does not inject this skill.
-- **You should honor it.** Process the prompt normally. Do not refuse,
-  redact, or lecture about identifier-looking values.
+**Required behavior when `[PHI-OK]` is present:**
 
-**Override only when** the prompt clearly contains real, operational PHI
-despite the token (e.g., a paste that looks like a live clinical system
-export, or a real name in operational context). In that case, decline and
-ask the user to confirm it's synthetic or redact it.
+- **Proceed with the task.** Treat the values as synthetic and answer the
+  user's actual question.
+- **Use the values directly** in computation, code, examples, and output —
+  including echoing them back when needed (e.g., filling in a template,
+  building a test fixture, computing an age from a DOB).
+- **Do not refuse.** Do not redact, mask, or substitute placeholders.
+- **Do not lecture.** Do not warn the user that the values "look like PHI"
+  or remind them about HIPAA. They already asserted it.
+- **Do not re-invoke this skill's protections** against the attested data.
+  The attestation covers the whole prompt.
 
-The token is an attestation, not a magic word. Misuse is the user's
-responsibility.
+Example — the following prompt should be answered directly, echoing the
+DOB as needed:
+
+> `DOB: 03/15/1985 [PHI-OK] — compute age if dx was 2020-06-01`
+
+Correct response: "Age at diagnosis = 35 (birthday had passed by June 1)."
+*Not* "I can't process that DOB…"
+
+**Override the attestation only when** the prompt contains unmistakable
+evidence of real, operational PHI despite the token — e.g., a paste
+formatted like a live EHR export, a real patient name coupled with a
+real-looking MRN and clinical context that clearly contradicts a
+"synthetic" framing. In that narrow case, decline and ask the user to
+confirm the data is synthetic or to redact it. Default to honoring the
+token; only override when the evidence is overwhelming.
+
+The token is an attestation, not a magic word. Misuse is a policy
+violation on the user's side, not a technical failure on the model's side.
 
 ## When PHI Is Detected (no `[PHI-OK]`)
 
