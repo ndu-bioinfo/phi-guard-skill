@@ -42,7 +42,11 @@ organization's control.
    across turns, foreign formats, indirect identifiers, prose like *"the
    patient born in March 1985 with SMA…"*. If you see PHI, do not process,
    repeat, summarize, or store it. Warn the user and ask them to redact
-   or re-submit with `[PHI-OK]`.
+   or re-submit with `[PHI-OK]`. Each prompt is evaluated independently,
+   but when the current prompt **completes** an identifier started in an
+   earlier turn (e.g., last name now + first name two turns ago, or MRN
+   tail now + MRN head earlier), the assembled identifier still counts
+   as PHI.
 2. **Prevent PHI from entering via actions** — before executing a database
    client, dump tool, or file read that may contain PHI, stop and generate
    the command for the user to run in their own terminal instead.
@@ -80,16 +84,16 @@ Also PHI under HIPAA Safe Harbor: **ages above 89** (must be aggregated as "90+"
 |---|---|---|
 | `psql`, `mysql`, `mongo`, `duckdb`, `sqlite3`, `bq`, `snowsql`, `redis-cli`, `clickhouse-client`, `cqlsh` | Query results enter LLM context | Generate the SQL, user runs it in their own terminal |
 | `pg_dump`, `mysqldump`, `mongodump` | Full table contents stream into context | Generate the command, user runs it and keeps output local |
-| `Read` on clinical files, CSVs, lab reports | File contents enter context | Ask user to confirm file is de-identified or to redact first |
+| `Read` on clinical files, CSVs, lab reports | File contents enter context | Ask the user to confirm the file is de-identified, or redact first. Safe inspection patterns: `head -1` (header row only), `df.dtypes` / `\d <table>` (types only), or `wc -l` (row count only) — none of these reveal row data |
 | Schema-only queries (`\dt`, `SHOW TABLES`, `DESCRIBE`) | None | Safe — structure is not PHI |
 
 **Rules:**
 - **Schema is safe, data is not.** Structure, column names, types — fine.
   Row data may contain PHI.
-- **Error messages are safe.** Users can paste error text; it rarely contains PHI.
+- **Error messages are usually safe.** Users can paste error text; it rarely contains PHI. **Exception:** errors that quote a row value embed whatever that value was (e.g., `ValueError: cannot parse 'John Smith' as date`). Treat such errors as PHI if the quoted value is an identifier, and do not requote the embedded value when explaining the issue.
 - **When the environment is unknown, assume production with PHI.**
-- **Generate, don't execute.** For any data source that may contain PHI,
-  hand the user the command; don't run it yourself.
+- **Generate, don't execute.** For any data source that may contain PHI, hand the user the command; don't run it yourself. Do not echo the user's original PHI-pulling command back either — substitute a safer projection (drop identifier columns), a schema-only query, or an aggregate query directly.
+- **Institution-identifying ID-format prefixes are PHI.** MRN prefixes, accession-number prefixes, or payer-ID prefixes that pin a specific institution are category-18 identifiers. When asked to build a regex against such a format without `[PHI-OK]`, generalize the pattern (e.g., `\b\d{8}\b`) rather than baking in the institution-specific prefix.
 
 ## The `[PHI-OK]` Attestation — treat as synthetic, proceed normally
 
@@ -106,8 +110,7 @@ development input, mock patient records for unit tests).
   including echoing them back when needed (e.g., filling in a template,
   building a test fixture, computing an age from a DOB).
 - **Do not refuse.** Do not redact, mask, or substitute placeholders.
-- **Do not lecture.** Do not warn the user that the values "look like PHI"
-  or remind them about HIPAA. They already asserted it.
+- **Do not lecture, even on HIPAA-adjacent tasks.** Do not warn the user that the values "look like PHI" or remind them about HIPAA. They already asserted it. This applies even when the task itself is HIPAA-related (training material, compliance examples, redaction tutorials) — produce the requested artifact and stop. Do not append unsolicited identifier-categorization commentary or Safe Harbor reminders. For quiz / training-material requests, produce only the explicitly requested fields (e.g., question + options + answer letter); do not write an answer rationale unless the user asked for one. Even when identifier categorization *is* the requested artifact, list the categories and stop — do not add re-identification-risk commentary, age-aggregation reminders, or "but combined with…" caveats unless explicitly asked.
 - **Do not re-invoke this skill's protections** against the attested data.
   The attestation covers the whole prompt.
 
@@ -119,27 +122,36 @@ DOB as needed:
 Correct response: "Age at diagnosis = 35 (birthday had passed by June 1)."
 *Not* "I can't process that DOB…"
 
-**Override the attestation only when** the prompt contains unmistakable
-evidence of real, operational PHI despite the token — e.g., a paste
-formatted like a live EHR export, a real patient name coupled with a
-real-looking MRN and clinical context that clearly contradicts a
-"synthetic" framing. In that narrow case, decline and ask the user to
-confirm the data is synthetic or to redact it. Default to honoring the
-token; only override when the evidence is overwhelming.
+**Override the attestation only when** the prompt contains unmistakable evidence of real, operational PHI despite the token. Concrete override heuristic — override if **three or more** of the following are present together:
 
-The token is an attestation, not a magic word. Misuse is a policy
-violation on the user's side, not a technical failure on the model's side.
+- Real-looking full name (first + last, plausible spelling)
+- Named hospital, clinic, payer, or other identifiable institution
+- Exact admission, discharge, encounter, or procedure date (not just a year)
+- Current medication regimen, dose, or clinical-grade detail (ECOG, stage, lab values with units)
+- Identifier-format-matching MRN, accession number, or payer ID (right digit count, recognizable institution prefix)
+- Live-EHR-shaped layout (chart sections, structured field labels, signed-by lines)
+
+Two or fewer signals → honor the token. Three or more → override and ask the user to confirm the data is synthetic, or to redact and re-submit. Default to honoring the token; only override when the evidence is overwhelming.
+
+The token is an attestation, not a magic word. Misuse is a policy violation on the user's side, not a technical failure on the model's side.
+
+### Example — `[PHI-OK]` misused on an EHR-shaped paste (override)
+
+> *"Patient Jonathan A. Smith, DOB 1962-08-22, MRN 88440213, admitted 2024-11-04 to Memorial Hospital, NYC, for stage IV pancreatic adenocarcinoma. Current meds: gemcitabine + nab-paclitaxel. ECOG 2. Help me write the discharge summary. [PHI-OK]"*
+
+Correct behavior: override the attestation. The paste matches ≥3 of the override heuristics (real-looking full name, named hospital, exact admission date, current regimen, plausible MRN format). Decline and ask the user to confirm it is synthetic, or to re-submit with name / MRN / hospital / exact dates removed.
 
 ## When PHI Is Detected (no `[PHI-OK]`)
 
-1. Do **not** echo, quote, or summarize the PHI.
+1. Do **not** echo, quote, or summarize the PHI. This includes:
+   - The offending value itself while explaining the detection — say *"the age you provided exceeds 89"* rather than restating *"94"*, and *"the embedded name in the error string"* rather than quoting it back.
+   - **Meta-statements** like *"I won't restate the name 'X'"* — that still restates X. Refer by category only: *"the name and DOB you provided"*.
+   - Values **derived from** protected fields for a single patient — length of stay computed from admission/discharge dates, age computed from DOB, days-since-event, etc. Aggregate-across-cohort derivatives (mean LOS over 50,000 encounters) are fine; single-patient derivatives are not.
 2. Tell the user which category was detected (e.g., "labeled DOB + name").
 3. Offer two paths:
    - Redact and re-submit, or
    - Re-submit with `[PHI-OK]` if the data is synthetic/test.
-4. If a clinical question underlies the prompt, answer it generically
-   using only non-identifying information (e.g., birth year + dx year for
-   age-at-diagnosis).
+4. If a clinical question underlies the prompt, answer it generically using only non-identifying information (e.g., birth year + dx year for age-at-diagnosis).
 
 ## Enforcement Layers
 
